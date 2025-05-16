@@ -1,2 +1,1 @@
-# driving-coach
-schiffy driving rater jawn with assetto corsadith
+# Driving-coach\n\nDay 1 - skeleton for project ready
