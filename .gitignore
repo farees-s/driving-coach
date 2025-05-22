@@ -1,0 +1,13 @@
+# --- venv & OS noise ---
+.venv/
+__pycache__/
+*.pyc
+
+# --- data outputs ---
+data/raw/
+data/yolo/*/
+data/video/
+
+# --- editor/IDE files ---
+.vscode/
+.DS_Store
