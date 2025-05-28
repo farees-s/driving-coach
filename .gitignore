@@ -6,7 +6,7 @@ __pycache__/
 # --- data outputs ---
 data/raw/
 data/yolo/*/
-data/video/
+
 
 # --- editor/IDE files ---
 .vscode/
