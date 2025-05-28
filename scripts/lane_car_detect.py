@@ -31,7 +31,7 @@ def process_video(src, dst): ## main video process
             break
 
         height, width = frame.shape[:2]
-        roi_vertices = np.array([[
+        roi_vertices = np.array([[ ## chat fixed this, boundaries for region of interest
             (int(width * 0.15), int(height * 0.70)), 
             (int(width * 0.40), int(height * 0.52)),  
             (int(width * 0.60), int(height * 0.52)),  
@@ -42,7 +42,7 @@ def process_video(src, dst): ## main video process
         edges = cv2.Canny(gray, 100, 200)
         cropped = region_of_interest(edges, roi_vertices)
 
-        lines = cv2.HoughLinesP(
+        lines = cv2.HoughLinesP( ## documentation of how to use houghlinesp
             cropped,
             rho=2,
             theta=np.pi / 180,
@@ -56,7 +56,7 @@ def process_video(src, dst): ## main video process
             for x1, y1, x2, y2 in lines[:,0]:
                 slope = (y2 - y1) / (x2 - x1 + 1e-6)
                 if slope < -0.5:   left.append((x1, y1, x2, y2))
-                elif slope >  0.5: right.append((x1, y1, x2, y2))
+                elif slope >  0.5: right.append((x1, y1, x2, y2)) ## FROM SOME TUTORIAL
 
             def make_line(points):
                 xs = [p[0] for p in points] + [p[2] for p in points]
