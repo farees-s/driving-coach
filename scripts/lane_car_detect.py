@@ -1,6 +1,5 @@
-#!/usr/bin/env python
 """
-Lane detection demo (no vehicles)
+Lane detection -- NO YOLOV8
 Draws left/right lane fill using Canny + Hough and
 Outputs an annotated MP4 in outputs folder
 """
@@ -29,7 +28,8 @@ def process_video(src, dst): ## main video process
         ret, frame = capture.read()
         if not ret:
             break
-
+        frame_idx = processed
+        
         height, width = frame.shape[:2]
         roi_vertices = np.array([[ ## chat fixed this, boundaries for region of interest
             (int(width * 0.15), int(height * 0.70)), 
@@ -71,7 +71,12 @@ def process_video(src, dst): ## main video process
                 if line_pts is not None:
                     x1,y1,x2,y2 = line_pts[0]
                     cv2.line(frame, (x1,y1), (x2,y2), (0,255,0), 8)
-
+            label_dir = pathlib.Path("data/yolo/lane_demo/labels")
+            label_dir.mkdir(parents=True, exist_ok=True)
+            if line_pts is not None:
+                np.savetxt(label_dir / f"{frame_idx:06}.txt",
+                        line_pts.reshape(1,4),
+                        fmt='%d')
         out.write(frame)
         processed += 1
         if processed % 20 == 0 or processed == total:
@@ -79,11 +84,13 @@ def process_video(src, dst): ## main video process
             elapsed = time.time()-t0
             print(f"processing {processed}/{total}  ({pct:5.1f}%)  {elapsed:5.1f}s", end="\r")
 
-    print()  # newline after the final carriage return
+    print()  # newline after the final return
     out.release()
     capture.release()
     print(f"Saved annotated video to {dst}")
 
+
+    
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("source", help="input video file (mp4)")
