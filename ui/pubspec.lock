@@ -168,14 +168,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "5.1.1"
-  macos_file_picker:
-    dependency: "direct main"
-    description:
-      name: macos_file_picker
-      sha256: "8999b125f8166b60f4693065ddec7770bfc5b5fe3e4e6cecd78b07a3b33e7701"
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.6.1"
   matcher:
     dependency: transitive
     description:
