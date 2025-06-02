@@ -1,0 +1,27 @@
+import 'package:fl_chart/fl_chart.dart';
+import 'package:flutter/material.dart';
+
+class OffsetChart extends StatelessWidget {
+  const OffsetChart({super.key, required this.rows});
+
+  final List<Map<String, dynamic>> rows;
+
+  @override
+  Widget build(BuildContext context) {
+    final spots = rows
+        .map((r) => FlSpot(
+              (r['timestamp'] as num).toDouble(),
+              (r['lane_offset_px'] as num).toDouble(),
+            ))
+        .toList();
+
+    return LineChart(LineChartData(
+      lineBarsData: [
+        LineChartBarData(isCurved: false, spots: spots, dotData: FlDotData(show: false)),
+      ],
+      titlesData: const FlTitlesData(show: false),
+      gridData: const FlGridData(show: false),
+      borderData: FlBorderData(show: false),
+    ));
+  }
+}
