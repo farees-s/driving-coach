@@ -1,9 +1,7 @@
-// app_root.dart
-// Main dashboard + session history + optional DB reset.
-
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'video_service.dart';
 import 'db_service.dart';
 import 'offset_chart.dart';
 import 'session_history_page.dart';
@@ -15,156 +13,157 @@ class AppRoot extends StatefulWidget {
 }
 
 class _AppRootState extends State<AppRoot> {
-  /* ───────── state ───────── */
   File? _laneFile, _teleFile;
   List<Map<String, dynamic>> _laneRows = [];
   double? _score;
   bool _busy = false;
   String _msg = '';
 
-  // default browse folder on macOS
-  static const _defaultDir =
-      '/Users/foyezsiddiqui/Documents/assetoproject';
+  static const _defaultDir = '/Users/foyezsiddiqui/Documents/assetoproject'; // specific folder
 
-  /* ───────── file picker ───────── */
-  Future<void> _pickCsv() async {
+  Future<void> _pickVideo() async {
     final res = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: ['csv'],
+      type: FileType.video,
       initialDirectory: _defaultDir,
-      dialogTitle: 'Select a CSV file',
+      dialogTitle: 'Select drive video',
     );
     if (res == null) return;
-
-    final file = File(res.files.single.path!);
-    final name = res.files.single.name.toLowerCase();
+    final video = File(res.files.single.path!);
 
     setState(() {
-      if (name.contains('tele')) {
-        _teleFile = file;
-      } else {
-        _laneFile = file;
-      }
-      _msg = '${res.files.single.name} selected';
+      _busy = true;
+      _msg = 'Processing video…';
     });
-  }
 
-  /* ───────── import + score ───────── */
-  Future<void> _process() async {
-    if (_laneFile == null || _teleFile == null) {
-      _snack('Pick both lane and telemetry CSVs first', Colors.orange);
-      return;
-    }
     try {
+      final lanePath = await VideoService.processVideo(video);
+      _laneFile = File(lanePath);
       setState(() {
-        _busy = true;
-        _msg = 'Importing…';
+        _msg = 'Video processed. Now import telemetry CSV.';
       });
-
-      await DBService.importCsv(_laneFile!, 'lane');
-      await DBService.importCsv(_teleFile!, 'telemetry');
-
-      final rows = await DBService.query(
-          'SELECT timestamp,lane_offset_px FROM lane ORDER BY timestamp');
-      if (rows.isEmpty) throw Exception('Lane table empty after import');
-
-      /* ----- lane‑keeping score ----- */
-      const frameCenter = 640.0;
-      final avgDev = rows
-              .map((r) =>
-                  ((r['lane_offset_px'] as num).toDouble() - frameCenter).abs())
-              .reduce((a, b) => a + b) /
-          rows.length;
-
-      double calcScore = (1 - avgDev / frameCenter) * 100;
-      calcScore = calcScore.clamp(0, 100);
-      /* ------------------------------ */
-
-      setState(() {
-        _laneRows = rows;
-        _score = calcScore;
-        _msg = 'Done – ${rows.length} pts';
-      });
-
-      /* ----- save session via DBService.saveSession ----- */
-      await DBService.saveSession(
-        score: _score!,
-        teleFilePath: _teleFile!.path,
-        laneFilePath: _laneFile!.path,
-        teleFileName: _teleFile!.path.split('/').last,
-        laneFileName: _laneFile!.path.split('/').last,
-      );
-      /* --------------------------------------------------- */
     } catch (e) {
-      _snack('Failed: $e', Colors.red);
+      _snack('Video error: $e', Colors.red);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
 
-  /* ───────── helpers ───────── */
+
+  Future<void> _pickTelemetryCsv() async {
+    final res = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['csv'],
+      initialDirectory: _defaultDir,
+      dialogTitle: 'Select telemetry.csv',
+    );
+    if (res == null) return;
+    setState(() {
+      _teleFile = File(res.files.single.path!);
+      _msg = 'Telemetry CSV selected.';
+    });
+  }
+
+  Future<void> _syncAndScore() async {
+    if (_laneFile == null || _teleFile == null) return;
+    setState(() {
+      _busy = true;
+      _msg = 'Syncing & scoring…';
+    });
+
+    try {
+      // Call sync.py to align lane.csv + telemetry.csv
+      final result = await Process.run('python3', [
+        '../backend/scripts/sync.py',
+        _laneFile!.path,
+        _teleFile!.path,
+        '--horn-frame',
+        '0',
+        '--horn-row',
+        '0',
+      ]);
+      if (result.exitCode != 0) {
+        throw Exception('Sync failed: ${result.stderr}');
+      }
+
+      // Import both CSVs into SQLite
+      await DBService.importCsv(_laneFile!, 'lane');
+      await DBService.importCsv(_teleFile!, 'telemetry');
+
+      // Compute lane-keeping score
+      final rows = await DBService.query(
+          'SELECT timestamp,lane_offset_px FROM lane ORDER BY timestamp');
+      if (rows.isEmpty) throw Exception('Lane table is empty.');
+
+      const frameCenter = 640.0;
+      final avgDev = rows
+          .map((r) =>
+              ((r['lane_offset_px'] as num).toDouble() - frameCenter).abs())
+          .reduce((a, b) => a + b) /
+          rows.length;
+      double calcScore = (1 - avgDev / frameCenter) * 100;
+      calcScore = calcScore.clamp(0, 100);
+
+      //Save session
+      await DBService.saveSession(
+        score: calcScore,
+        teleFilePath: _teleFile!.path,
+        laneFilePath: _laneFile!.path,
+        teleFileName: _teleFile!.path.split('/').last,
+        laneFileName: _laneFile!.path.split('/').last,
+      );
+
+      setState(() {
+        _laneRows = rows;
+        _score = calcScore;
+        _msg = 'Done – session saved!';
+      });
+    } catch (e) {
+      _snack('Sync/Score error: $e', Colors.red);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  bool _readyToSync() => !_busy && _laneFile != null && _teleFile != null;
+
   void _snack(String txt, Color c) {
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(txt), backgroundColor: c));
   }
 
-  Future<void> _resetDb() async {
-    try {
-      await DBService.query('DELETE FROM sessions');
-      await DBService.query('DELETE FROM lane');
-      await DBService.query('DELETE FROM telemetry');
-      setState(() {
-        _laneRows.clear();
-        _score = null;
-        _msg = 'Database cleared';
-      });
-    } catch (e) {
-      _snack('Reset failed: $e', Colors.red);
-    }
-  }
-
-  /* ───────── UI ───────── */
   @override
   Widget build(BuildContext context) {
-    final ready = !_busy && _laneFile != null && _teleFile != null;
-
     return Scaffold(
-      appBar: AppBar(title: const Text('Driving‑Coach Dashboard')),
+      appBar: AppBar(title: const Text('Driving-Coach Dashboard')),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            // Import video
             ElevatedButton.icon(
-              onPressed: _busy ? null : _pickCsv,
-              icon: const Icon(Icons.upload_file),
-              label: const Text('Choose CSV'),
+              onPressed: _busy ? null : _pickVideo,
+              icon: const Icon(Icons.video_file),
+              label: const Text('Import video'),
             ),
             const SizedBox(height: 12),
+
+            // Import telemetry CSV
             ElevatedButton.icon(
-              onPressed: ready ? _process : null,
-              icon: const Icon(Icons.play_arrow),
-              label: const Text('Process'),
+              onPressed: _busy ? null : _pickTelemetryCsv,
+              icon: const Icon(Icons.file_present),
+              label: const Text('Import telemetry.csv'),
             ),
             const SizedBox(height: 12),
+
+            // Sync & Score
             ElevatedButton.icon(
-              onPressed: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const SessionHistoryPage()),
-              ),
-              icon: const Icon(Icons.history),
-              label: const Text('Session History'),
+              onPressed: _readyToSync() ? _syncAndScore : null,
+              icon: const Icon(Icons.analytics),
+              label: const Text('Sync & Score'),
             ),
-            /* ---------- optional reset button ---------- */
-            const SizedBox(height: 12),
-            ElevatedButton.icon(
-              onPressed: _busy ? null : _resetDb,
-              icon: const Icon(Icons.delete_forever),
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-              label: const Text('Reset DB'),
-            ),
-            /* ------------------------------------------- */
             const SizedBox(height: 20),
+
             if (_msg.isNotEmpty) Text(_msg),
             if (_score != null) ...[
               const SizedBox(height: 20),
