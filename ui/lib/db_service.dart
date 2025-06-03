@@ -6,194 +6,408 @@ import 'package:sqflite/sqflite.dart';
 class DBService {
   static Database? _db;
 
-  /// Initialize the database
+  /* ───────── init ───────── */
   static Future<void> init() async {
     if (_db != null) return;
-
-    final dbPath = await getDatabasesPath();
-    final path = join(dbPath, 'sessions.db');
+    final path = join(await getDatabasesPath(), 'sessions.db');
 
     _db = await openDatabase(
       path,
-      version: 1,
-      onCreate: (db, version) async {
-        // Create telemetry table
-        await db.execute('''
-          CREATE TABLE telemetry (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp REAL,
-            speed_kmh REAL,
-            throttle REAL,
-            brake REAL,
-            steer REAL
-          )
-        ''');
-
-        // Create lane table
-        await db.execute('''
-          CREATE TABLE lane (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            frame INTEGER,
-            timestamp REAL,
-            lane_offset_px REAL
-          )
-        ''');
-      },
+      version: 6, // ← BUMP VERSION to force migration
+      onCreate: (db, _) async => _createSchema(db),
+      onUpgrade: (db, oldV, __) async => _runMigrations(db, oldV),
     );
   }
 
-  /// Get database instance
-  static Database get db {
-    if (_db == null) {
-      throw Exception('Database not initialized. Call DBService.init() first.');
-    }
-    return _db!;
+  static Database get _ => _db!;
+
+  /* ───────── schema helpers ───────── */
+  static Future<void> _createSchema(Database db) async {
+    await db.execute('''
+      CREATE TABLE telemetry(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp REAL,
+        speed_kmh REAL,
+        throttle REAL,
+        brake REAL,
+        steer REAL,
+        accel REAL,
+        jerk REAL,
+        brake_spike INTEGER
+      );
+    ''');
+    await db.execute('''
+      CREATE TABLE lane(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        frame INTEGER,
+        timestamp REAL,
+        lane_offset_px REAL
+      );
+    ''');
+    // Sessions table with consistent schema
+    await db.execute('''
+      CREATE TABLE sessions(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date_created TEXT,
+        score REAL,
+        tele_file_path TEXT,
+        lane_file_path TEXT,
+        tele_file_name TEXT,
+        lane_file_name TEXT
+      );
+    ''');
   }
 
-  /// Import CSV file into specified table
-  static Future<void> importCsv(File csvFile, String tableName) async {
-    try {
-      final csvContent = await csvFile.readAsString();
-      final List<List<dynamic>> csvData = const CsvToListConverter().convert(csvContent);
+  static Future<void> _runMigrations(Database db, int from) async {
+    print('Running migrations from version $from');
+    
+    if (from < 2) {
+      await _ensureCol(db, 'telemetry', 'speed_kmh', 'REAL');
+      await _ensureCol(db, 'telemetry', 'throttle', 'REAL');
+      await _ensureCol(db, 'telemetry', 'brake', 'REAL');
+      await _ensureCol(db, 'telemetry', 'steer', 'REAL');
+    }
+    if (from < 3) {
+      await _ensureCol(db, 'telemetry', 'accel', 'REAL');
+      await _ensureCol(db, 'telemetry', 'jerk', 'REAL');
+      await _ensureCol(db, 'telemetry', 'brake_spike', 'INTEGER');
+    }
+    if (from < 4) {
+      // Create sessions table if it doesn't exist
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS sessions(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          date_created TEXT,
+          score REAL,
+          tele_file_path TEXT,
+          lane_file_path TEXT,
+          tele_file_name TEXT,
+          lane_file_name TEXT
+        );
+      ''');
+    }
+    if (from < 5) {
+      // Force recreation of sessions table to ensure all columns exist
+      print('Recreating sessions table to fix schema...');
       
-      if (csvData.isEmpty) return;
-      
-      // Clear existing data for this table
-      await db.delete(tableName);
-      
-      // Prepare batch insert
-      final batch = db.batch();
-      
-      // Get header row to understand the structure
-      final headers = csvData.first.map((h) => h.toString().toLowerCase().trim()).toList();
-      print('CSV Headers for $tableName: $headers');
-      
-      // Skip header row and insert data
-      for (int i = 1; i < csvData.length; i++) {
-        final row = csvData[i];
-        if (row.isEmpty) continue;
+      // Check if sessions table exists and has the right structure
+      final tables = await db.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'");
+      if (tables.isNotEmpty) {
+        // Get existing data if any
+        List<Map<String, dynamic>> existingData = [];
+        try {
+          existingData = await db.rawQuery('SELECT * FROM sessions');
+        } catch (e) {
+          print('Could not read existing sessions data: $e');
+        }
         
-        if (tableName == 'lane') {
-          // Expected format: frame,timestamp_ms,lane_offset_px
-          // Or handle different column orders
-          int frameIndex = _findColumnIndex(headers, ['frame']);
-          int timestampIndex = _findColumnIndex(headers, ['timestamp_ms', 'timestamp']);
-          int offsetIndex = _findColumnIndex(headers, ['lane_offset_px', 'offset']);
-          
-          if (frameIndex != -1 && timestampIndex != -1 && offsetIndex != -1) {
-            batch.insert('lane', {
-              'frame': _parseInt(row[frameIndex]),
-              'timestamp': _parseDouble(row[timestampIndex]) / 1000.0, // Convert ms to seconds
-              'lane_offset_px': _parseDouble(row[offsetIndex]),
+        // Drop and recreate
+        await db.execute('DROP TABLE IF EXISTS sessions');
+        await db.execute('''
+          CREATE TABLE sessions(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date_created TEXT,
+            score REAL,
+            tele_file_path TEXT,
+            lane_file_path TEXT,
+            tele_file_name TEXT,
+            lane_file_name TEXT
+          );
+        ''');
+        
+        // Restore data if it was readable and had the right structure
+        for (final row in existingData) {
+          try {
+            await db.insert('sessions', {
+              'date_created': row['date_created'] ?? DateTime.now().toIso8601String(),
+              'score': row['score'] ?? 0.0,
+              'tele_file_path': row['tele_file_path'] ?? '',
+              'lane_file_path': row['lane_file_path'] ?? '',
+              'tele_file_name': row['tele_file_name'] ?? '',
+              'lane_file_name': row['lane_file_name'] ?? '',
             });
-          } else {
-            // Fallback: assume columns are in order
-            if (row.length >= 3) {
-              batch.insert('lane', {
-                'frame': _parseInt(row[0]),
-                'timestamp': _parseDouble(row[1]) / 1000.0, // Convert ms to seconds
-                'lane_offset_px': _parseDouble(row[2]),
-              });
-            }
-          }
-        } else if (tableName == 'telemetry') {
-          // Expected format: timestamp,speed_kmh,throttle,brake,steer
-          int timestampIndex = _findColumnIndex(headers, ['timestamp']);
-          int speedIndex = _findColumnIndex(headers, ['speed_kmh', 'speed']);
-          int throttleIndex = _findColumnIndex(headers, ['throttle']);
-          int brakeIndex = _findColumnIndex(headers, ['brake']);
-          int steerIndex = _findColumnIndex(headers, ['steer', 'steering']);
-          
-          if (timestampIndex != -1 && speedIndex != -1 && throttleIndex != -1 && 
-              brakeIndex != -1 && steerIndex != -1) {
-            batch.insert('telemetry', {
-              'timestamp': _parseDouble(row[timestampIndex]),
-              'speed_kmh': _parseDouble(row[speedIndex]),
-              'throttle': _parseDouble(row[throttleIndex]),
-              'brake': _parseDouble(row[brakeIndex]),
-              'steer': _parseDouble(row[steerIndex]),
-            });
-          } else {
-            // Fallback: assume columns are in order
-            if (row.length >= 5) {
-              batch.insert('telemetry', {
-                'timestamp': _parseDouble(row[0]),
-                'speed_kmh': _parseDouble(row[1]),
-                'throttle': _parseDouble(row[2]),
-                'brake': _parseDouble(row[3]),
-                'steer': _parseDouble(row[4]),
-              });
-            }
+          } catch (e) {
+            print('Could not restore session row: $e');
           }
         }
+      } else {
+        // Table doesn't exist, create it
+        await db.execute('''
+          CREATE TABLE sessions(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date_created TEXT,
+            score REAL,
+            tele_file_path TEXT,
+            lane_file_path TEXT,
+            tele_file_name TEXT,
+            lane_file_name TEXT
+          );
+        ''');
+      }
+    }
+    if (from < 6) {
+      // Fix any inconsistencies in the sessions table schema
+      print('Ensuring sessions table has consistent schema...');
+      
+      // Check current table structure
+      final columns = await db.rawQuery('PRAGMA table_info(sessions)');
+      final columnNames = columns.map((col) => col['name'].toString()).toSet();
+      
+      // Get existing data if any
+      List<Map<String, dynamic>> existingData = [];
+      try {
+        existingData = await db.rawQuery('SELECT * FROM sessions');
+      } catch (e) {
+        print('Could not read existing sessions data: $e');
       }
       
-      // Execute batch insert
-      await batch.commit(noResult: true);
-      print('Successfully imported ${csvData.length - 1} rows into $tableName');
-    } catch (e) {
-      print('Error importing CSV: $e');
-      rethrow;
-    }
-  }
-
-  /// Helper method to find column index by name variations
-  static int _findColumnIndex(List<String> headers, List<String> possibleNames) {
-    for (String name in possibleNames) {
-      for (int i = 0; i < headers.length; i++) {
-        if (headers[i].contains(name.toLowerCase())) {
-          return i;
+      // Drop and recreate with correct schema
+      await db.execute('DROP TABLE IF EXISTS sessions');
+      await db.execute('''
+        CREATE TABLE sessions(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          date_created TEXT,
+          score REAL,
+          tele_file_path TEXT,
+          lane_file_path TEXT,
+          tele_file_name TEXT,
+          lane_file_name TEXT
+        );
+      ''');
+      
+      // Restore data, converting formats if needed
+      for (final row in existingData) {
+        try {
+          String dateCreated;
+          if (row.containsKey('date') && row['date'] != null) {
+            // Convert from epoch milliseconds to ISO string
+            final epochMs = row['date'] as int;
+            dateCreated = DateTime.fromMillisecondsSinceEpoch(epochMs).toIso8601String();
+          } else if (row.containsKey('date_created') && row['date_created'] != null) {
+            dateCreated = row['date_created'].toString();
+          } else {
+            dateCreated = DateTime.now().toIso8601String();
+          }
+          
+          await db.insert('sessions', {
+            'date_created': dateCreated,
+            'score': row['score'] ?? 0.0,
+            'tele_file_path': row['tele_file_path'] ?? '',
+            'lane_file_path': row['lane_file_path'] ?? '',
+            'tele_file_name': row['tele_file_name'] ?? '',
+            'lane_file_name': row['lane_file_name'] ?? '',
+          });
+        } catch (e) {
+          print('Could not restore session row: $e');
         }
       }
     }
-    return -1;
   }
 
-  /// Helper method to safely parse integers
-  static int _parseInt(dynamic value) {
-    if (value == null) return 0;
-    if (value is int) return value;
-    if (value is double) return value.toInt();
-    if (value is String) {
-      return int.tryParse(value) ?? 0;
+  static Future<void> _ensureCol(Database db, String t, String c, String type) async {
+    final cols = await db.rawQuery('PRAGMA table_info($t)');
+    if (!cols.any((row) => row['name'] == c)) {
+      await db.execute('ALTER TABLE $t ADD COLUMN $c $type;');
     }
-    return 0;
   }
 
-  /// Helper method to safely parse doubles
-  static double _parseDouble(dynamic value) {
-    if (value == null) return 0.0;
-    if (value is double) return value;
-    if (value is int) return value.toDouble();
-    if (value is String) {
-      return double.tryParse(value) ?? 0.0;
+  /* ───────── CSV import (keep existing method) ───────── */
+  static Future<void> importCsv(File f, String table) async {
+    print('=== DEBUG: Starting CSV import for $table ===');
+    
+    String raw = await f.readAsString();
+    raw = raw
+        .replaceAll('\ufeff', '')
+        .replaceAll('\r\n', '\n')
+        .replaceAll('\r', '\n')
+        .replaceAll(RegExp(r'[\[\]]'), '');
+
+    final cleanedLines = raw
+        .split('\n')
+        .where((l) => l.trim().isNotEmpty && !l.trimLeft().startsWith('#'))
+        .toList();
+
+    if (cleanedLines.length <= 1) {
+      throw Exception('CSV appears empty after cleaning.');
     }
-    return 0.0;
+
+    // Parse CSV - process each line individually
+    final listCsv = <List<dynamic>>[];
+    for (final line in cleanedLines) {
+      try {
+        final parsed = const CsvToListConverter(shouldParseNumbers: false)
+            .convert(line);
+        if (parsed.isNotEmpty && parsed.first.isNotEmpty) {
+          listCsv.add(parsed.first);
+        }
+      } catch (e) {
+        print('Error parsing line: $line, error: $e');
+      }
+    }
+
+    List<dynamic> header = listCsv.first.map((e) => e.toString().trim()).toList();
+    final dataRows = listCsv.skip(1).where((r) => r.isNotEmpty).toList();
+    
+    if (dataRows.isEmpty) {
+      throw Exception('No data rows found after header row.');
+    }
+
+    Map<String, int> columnMap = {};
+    for (int i = 0; i < header.length; i++) {
+      String colName = header[i].toString().toLowerCase();
+      columnMap[colName] = i;
+    }
+
+    final batch = _.batch();
+    int successfulInserts = 0;
+    
+    for (final row in dataRows) {
+      try {
+        if (table == 'lane') {
+          int? frameIdx = columnMap['frame'];
+          int? timestampIdx = columnMap['timestamp_ms'] ?? columnMap['timestamp'];
+          int? offsetIdx = columnMap['lane_offset_px'];
+
+          if (frameIdx != null && timestampIdx != null && offsetIdx != null && 
+              row.length > frameIdx && row.length > timestampIdx && row.length > offsetIdx) {
+            
+            double timestamp = _toDouble(row[timestampIdx]);
+            if (timestamp < 100000) {
+              timestamp = timestamp / 1000.0;
+            }
+            
+            batch.insert(table, {
+              'frame': _toInt(row[frameIdx]),
+              'timestamp': timestamp,
+              'lane_offset_px': _toDouble(row[offsetIdx]),
+            });
+            successfulInserts++;
+          }
+        } else if (table == 'telemetry') {
+          int? timestampIdx = columnMap['timestamp'];
+          int? speedIdx = columnMap['speed_kmh'];
+          int? throttleIdx = columnMap['throttle'];
+          int? brakeIdx = columnMap['brake'];
+          int? steerIdx = columnMap['steer'];
+
+          if (timestampIdx != null && speedIdx != null && throttleIdx != null && 
+              brakeIdx != null && steerIdx != null &&
+              row.length > timestampIdx && row.length > speedIdx && 
+              row.length > throttleIdx && row.length > brakeIdx && row.length > steerIdx) {
+            
+            batch.insert(table, {
+              'timestamp': _toDouble(row[timestampIdx]),
+              'speed_kmh': _toDouble(row[speedIdx]),
+              'throttle': _toDouble(row[throttleIdx]),
+              'brake': _toDouble(row[brakeIdx]),
+              'steer': _toDouble(row[steerIdx]),
+            });
+            successfulInserts++;
+          }
+        }
+      } catch (e) {
+        print('Error processing row: $row, error: $e');
+      }
+    }
+
+    if (successfulInserts == 0) {
+      throw Exception('No valid rows found to import.');
+    }
+
+    await _.delete(table);
+    await batch.commit(noResult: true);
+    print('Successfully imported $successfulInserts rows into $table');
   }
 
-  /// Query method that returns List<Map<String, dynamic>>
-  static Future<List<Map<String, dynamic>>> query(String sql, [List<Object?> params = const []]) async {
-    return await db.rawQuery(sql, params);
+  /* ───────── Session Management ───────── */
+  /// Save a new session after processing.
+  static Future<int> saveSession({
+    required double score,
+    required String teleFilePath,
+    required String laneFilePath,
+    required String teleFileName,
+    required String laneFileName,
+  }) async {
+    // Insert the new row with consistent column names
+    final id = await _.insert('sessions', {
+      'date_created': DateTime.now().toIso8601String(),
+      'score': score,
+      'tele_file_path': teleFilePath,
+      'lane_file_path': laneFilePath,
+      'tele_file_name': teleFileName,
+      'lane_file_name': laneFileName,
+    });
+
+    return id;
   }
 
-  /// Insert a row into a table
-  static Future<int> insert(String table, Map<String, Object?> row) async {
-    return await db.insert(table, row);
+  /// Get all sessions ordered by date (newest first)
+  static Future<List<Map<String, dynamic>>> getAllSessions() async {
+    try {
+      return await _.rawQuery('''
+        SELECT * FROM sessions 
+        ORDER BY date_created DESC
+      ''');
+    } catch (e) {
+      print('Error getting sessions: $e');
+      // Try to recreate table if it's corrupted
+      await _.execute('DROP TABLE IF EXISTS sessions');
+      await _.execute('''
+        CREATE TABLE sessions(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          date_created TEXT,
+          score REAL,
+          tele_file_path TEXT,
+          lane_file_path TEXT,
+          tele_file_name TEXT,
+          lane_file_name TEXT
+        );
+      ''');
+      return [];
+    }
   }
 
-  /// Update rows in a table
-  static Future<int> update(String table, Map<String, Object?> values, {String? where, List<Object?>? whereArgs}) async {
-    return await db.update(table, values, where: where, whereArgs: whereArgs);
+  /// Get session by ID
+  static Future<Map<String, dynamic>?> getSessionById(int id) async {
+    final results = await _.rawQuery(
+      'SELECT * FROM sessions WHERE id = ?',
+      [id],
+    );
+    return results.isEmpty ? null : results.first;
   }
 
-  /// Delete rows from a table
-  static Future<int> delete(String table, {String? where, List<Object?>? whereArgs}) async {
-    return await db.delete(table, where: where, whereArgs: whereArgs);
+  /// Load lane data for a specific session (re-import from file)
+  static Future<List<Map<String, dynamic>>> getSessionLaneData(int sessionId) async {
+    final session = await getSessionById(sessionId);
+    if (session == null) throw Exception('Session not found');
+
+    final laneFile = File(session['lane_file_path']);
+    if (!await laneFile.exists()) {
+      throw Exception('Lane file no longer exists: ${session['lane_file_path']}');
+    }
+
+    // Clear current lane data and re-import
+    await _.delete('lane');
+    await importCsv(laneFile, 'lane');
+    
+    // Return the lane data
+    return await _.rawQuery(
+      'SELECT timestamp, lane_offset_px FROM lane ORDER BY timestamp'
+    );
   }
 
-  /// Close the database
-  static Future<void> dispose() async {
-    await _db?.close();
-    _db = null;
+  /// Delete a session
+  static Future<void> deleteSession(int id) async {
+    await _.delete('sessions', where: 'id = ?', whereArgs: [id]);
   }
+
+  /* ───────── util ───────── */
+  static Future<List<Map<String, dynamic>>> query(String sql) async =>
+      _.rawQuery(sql);
+
+  static int _toInt(dynamic v) =>
+      v is int ? v : (double.tryParse(v.toString()) ?? 0).toInt();
+
+  static double _toDouble(dynamic v) =>
+      v is num ? v.toDouble() : double.tryParse(v.toString()) ?? 0.0;
 }

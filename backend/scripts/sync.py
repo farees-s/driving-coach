@@ -5,10 +5,10 @@ Writes sync.json
 import sys, json, pandas as pd, numpy as np, pathlib
 
 def _first_spike(series, thresh):
-    idx = series.gt(thresh).idxmax()
+    idx = series.gt(thresh).idxmax() ## checks for brake spike
     return idx if series.iloc[idx] > thresh else None
 
-def run(tele_csv, lane_csv, out_json, brake_thresh=75, light_thresh=50):
+def run(tele_csv, lane_csv, out_json, brake_thresh=75, light_thresh=50): ## now it runs it
     tele = pd.read_csv(tele_csv)
     lane = pd.read_csv(lane_csv)
     i_horn  = _first_spike(tele["brake"], brake_thresh)

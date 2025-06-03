@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 
 class OffsetChart extends StatelessWidget {
   const OffsetChart({super.key, required this.rows});
-
   final List<Map<String, dynamic>> rows;
 
   @override
@@ -15,13 +14,20 @@ class OffsetChart extends StatelessWidget {
             ))
         .toList();
 
-    return LineChart(LineChartData(
-      lineBarsData: [
-        LineChartBarData(isCurved: false, spots: spots, dotData: FlDotData(show: false)),
-      ],
-      titlesData: const FlTitlesData(show: false),
-      gridData: const FlGridData(show: false),
-      borderData: FlBorderData(show: false),
-    ));
+    return LineChart(
+      LineChartData(
+        lineBarsData: [
+          LineChartBarData(
+            isCurved: false,
+            spots: spots,
+            dotData: FlDotData(show: false),
+            barWidth: 2,
+          ),
+        ],
+        titlesData: const FlTitlesData(show: false),
+        gridData: const FlGridData(show: false),
+        borderData: FlBorderData(show: false),
+      ),
+    );
   }
 }
