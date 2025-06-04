@@ -2,17 +2,28 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 
 class OffsetChart extends StatelessWidget {
-  const OffsetChart({super.key, required this.rows});
+  const OffsetChart({
+    super.key, 
+    required this.rows,
+  });
+
   final List<Map<String, dynamic>> rows;
 
   @override
   Widget build(BuildContext context) {
-    final spots = rows
-        .map((r) => FlSpot(
-              (r['timestamp'] as num).toDouble(),
-              (r['lane_offset_px'] as num).toDouble(),
-            ))
-        .toList();
+    List<FlSpot> spots = [];
+    
+    for (Map<String, dynamic> row in rows) {
+      num timestamp = row['timestamp'];
+      num laneOffset = row['lane_offset_px'];
+      
+      FlSpot spot = FlSpot(
+        timestamp.toDouble(),
+        laneOffset.toDouble(),
+      );
+      
+      spots.add(spot);
+    }
 
     return LineChart(
       LineChartData(
@@ -20,13 +31,21 @@ class OffsetChart extends StatelessWidget {
           LineChartBarData(
             isCurved: false,
             spots: spots,
-            dotData: FlDotData(show: false),
+            dotData: FlDotData(
+              show: false,
+            ),
             barWidth: 2,
           ),
         ],
-        titlesData: const FlTitlesData(show: false),
-        gridData: const FlGridData(show: false),
-        borderData: FlBorderData(show: false),
+        titlesData: const FlTitlesData(
+          show: false,
+        ),
+        gridData: const FlGridData(
+          show: false,
+        ),
+        borderData: FlBorderData(
+          show: false,
+        ),
       ),
     );
   }

@@ -6,26 +6,38 @@ import 'app_root.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await DBService.init();
-
   try {
-    Process.start('bash', ['backend/start_backend.sh'], // starting backend
-        mode: ProcessStartMode.detached);
-  } catch (_) {}
+    Process.start( // auto backend start basically a thread
+        'bash',
+        ['../backend/start_backend.sh'],
+        mode: ProcessStartMode.detached,
+    );
+  } catch (error) {
+    // handle if the backend cant start
+  }
 
-  runApp(const _MyApp());
+  runApp(
+    const _MyApp(),
+  );
 }
 
 class _MyApp extends StatelessWidget {
-  const _MyApp({super.key});
+  const _MyApp({
+    super.key,
+  });
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Driving Coach',
+      title: 'Driving-Coach Dashboard',
       theme: ThemeData(
         useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: Colors.blue,
+        ),
       ),
       home: const AppRoot(),
+      debugShowCheckedModeBanner: false,
     );
   }
 }

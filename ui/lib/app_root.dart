@@ -9,170 +9,214 @@ import 'session_history_page.dart';
 class AppRoot extends StatefulWidget {
   const AppRoot({super.key});
   @override
-  State<AppRoot> createState() => _AppRootState();
+  State<AppRoot> createState() => AppRootState();
 }
 
-class _AppRootState extends State<AppRoot> {
-  File? _laneFile, _teleFile;
-  List<Map<String, dynamic>> _laneRows = [];
-  double? _score;
-  bool _busy = false;
-  String _msg = '';
+class AppRootState extends State<AppRoot> {
+  
+  File? laneFile;          
+  File? teleFile;          
+  List<Map<String, dynamic>> laneRows = []; 
+  double? score;           
+  bool busy = false;
+  String msg = '';         
 
-  static const _defaultDir = '/Users/foyezsiddiqui/Documents/assetoproject'; // specific folder
+  static const defaultDir = '/Users/foyezsiddiqui/Documents/assetoproject';
 
-  Future<void> _pickVideo() async {
-    final res = await FilePicker.platform.pickFiles(
+  Future<void> pickVideo() async {
+    final FilePickerResult? res = await FilePicker.platform.pickFiles(
       type: FileType.video,
-      initialDirectory: _defaultDir,
+      initialDirectory: defaultDir,
       dialogTitle: 'Select drive video',
     );
+
     if (res == null) return;
-    final video = File(res.files.single.path!);
+
+    final File video = File(res.files.single.path!);
 
     setState(() {
-      _busy = true;
-      _msg = 'Processing video…';
+      busy = true;
+      msg = 'Processing video…';
     });
 
     try {
-      final lanePath = await VideoService.processVideo(video);
-      _laneFile = File(lanePath);
+      final String lanePath = await VideoService.processVideo(video); // video process call
+      laneFile = File(lanePath);
       setState(() {
-        _msg = 'Video processed. Now import telemetry CSV.';
+        msg = 'Video processed, waiting for telemetry CSV import';
       });
     } catch (e) {
-      _snack('Video error: $e', Colors.red);
+      snack('Video error: $e', Colors.red);
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) {
+        setState(() {
+          busy = false;
+        });
+      }
     }
   }
 
-
-  Future<void> _pickTelemetryCsv() async {
-    final res = await FilePicker.platform.pickFiles(
+  Future<void> pickTelemetryCsv() async { //specifically csv selection
+    final FilePickerResult? res = await FilePicker.platform.pickFiles(
       type: FileType.custom,
-      allowedExtensions: ['csv'],
-      initialDirectory: _defaultDir,
+      allowedExtensions: ['csv'], 
+      initialDirectory: defaultDir,
       dialogTitle: 'Select telemetry.csv',
     );
+
     if (res == null) return;
+
     setState(() {
-      _teleFile = File(res.files.single.path!);
-      _msg = 'Telemetry CSV selected.';
+      teleFile = File(res.files.single.path!);
+      msg = 'Telemetry CSV selected.';
     });
   }
 
-  Future<void> _syncAndScore() async {
-    if (_laneFile == null || _teleFile == null) return;
+  Future<void> processCsvs() async { // runns processing and scoring
+    if (laneFile == null || teleFile == null) {
+      snack('Please import both lane.csv and telemetry.csv first', Colors.orange);
+      return;
+    }
+
     setState(() {
-      _busy = true;
-      _msg = 'Syncing & scoring…';
+      busy = true;
+      msg = 'Processing & scoring…';
     });
 
     try {
-      // Call sync.py to align lane.csv + telemetry.csv
-      final result = await Process.run('python3', [
-        '../backend/scripts/sync.py',
-        _laneFile!.path,
-        _teleFile!.path,
-        '--horn-frame',
-        '0',
-        '--horn-row',
-        '0',
-      ]);
-      if (result.exitCode != 0) {
-        throw Exception('Sync failed: ${result.stderr}');
+      await DBService.importCsv(laneFile!, 'lane');
+      await DBService.importCsv(teleFile!, 'telemetry');
+
+      final List<Map<String, dynamic>> rows = await DBService.query(
+          'SELECT timestamp, lane_offset_px FROM lane ORDER BY timestamp');
+
+      if (rows.isEmpty) {
+        throw Exception('Lane table is empty.');
       }
 
-      // Import both CSVs into SQLite
-      await DBService.importCsv(_laneFile!, 'lane');
-      await DBService.importCsv(_teleFile!, 'telemetry');
+      const double frameCenter = 640.0;
+      double sumDeviation = 0.0;
 
-      // Compute lane-keeping score
-      final rows = await DBService.query(
-          'SELECT timestamp,lane_offset_px FROM lane ORDER BY timestamp');
-      if (rows.isEmpty) throw Exception('Lane table is empty.');
+      for (var row in rows) {
+        double offset = (row['lane_offset_px'] as num).toDouble();
+        sumDeviation = sumDeviation + (offset - frameCenter).abs(); // for avg deviation
+      }
 
-      const frameCenter = 640.0;
-      final avgDev = rows
-          .map((r) =>
-              ((r['lane_offset_px'] as num).toDouble() - frameCenter).abs())
-          .reduce((a, b) => a + b) /
-          rows.length;
-      double calcScore = (1 - avgDev / frameCenter) * 100;
-      calcScore = calcScore.clamp(0, 100);
+      double avgDev = sumDeviation / rows.length; //  avg dev for lane offset scoring part
+      double laneScore = (1 - avgDev / frameCenter) * 100;
+      laneScore = laneScore.clamp(0.0, 100.0); // clamped
 
-      //Save session
-      await DBService.saveSession(
-        score: calcScore,
-        teleFilePath: _teleFile!.path,
-        laneFilePath: _laneFile!.path,
-        teleFileName: _teleFile!.path.split('/').last,
-        laneFileName: _laneFile!.path.split('/').last,
+      // telemetry part of scoring
+      final List<Map<String, dynamic>> teleRows = await DBService.query(
+          'SELECT timestamp, steer FROM telemetry ORDER BY timestamp');
+      double telePenalty = 0.0;
+      if (teleRows.length > 1) {
+        double sumSteerDiff = 0.0;
+        for (int i = 1; i < teleRows.length; i++) {
+          double prev = (teleRows[i - 1]['steer'] as num).toDouble();
+          double curr = (teleRows[i]['steer'] as num).toDouble();
+          sumSteerDiff += (curr - prev).abs(); // this makes it based on how smooth steering is
+        }
+        double avgSteerChange = sumSteerDiff / (teleRows.length - 1); // calcudiths
+        double smoothScore = (1 - (avgSteerChange / 1.0)) * 100;
+        smoothScore = smoothScore.clamp(0.0, 100.0);//clamp
+        score = (laneScore * 0.7) + (smoothScore * 0.3);
+      } else {
+        score = laneScore; // THIS IS A FALLBACK IF NO TELEMETRY DATA
+      }
+
+      await DBService.saveSession( // save session so u can see in history
+        score: score!,
+        teleFilePath: teleFile!.path,
+        laneFilePath: laneFile!.path,
+        teleFileName: teleFile!.path.split('/').last,
+        laneFileName: laneFile!.path.split('/').last,
       );
 
       setState(() {
-        _laneRows = rows;
-        _score = calcScore;
-        _msg = 'Done – session saved!';
+        laneRows = rows;
+        msg = 'Done, session saved';
       });
     } catch (e) {
-      _snack('Sync/Score error: $e', Colors.red);
+      snack('Processing error: $e', Colors.red);
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) {
+        setState(() {
+          busy = false;
+        });
+      }
     }
   }
 
-  bool _readyToSync() => !_busy && _laneFile != null && _teleFile != null;
+  bool readyToProcess() { 
+    return !busy && laneFile != null && teleFile != null;
+  }
 
-  void _snack(String txt, Color c) {
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(txt), backgroundColor: c));
+  void snack(String txt, Color c) { // THIS IS CHATGPT HELPER FOR DEBUGGING
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(txt),
+        backgroundColor: c,
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Driving-Coach Dashboard')),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
+      appBar: AppBar(
+        title: const Text('Driving Coach Dashboard'),
+        actions: [
+          IconButton( // this is the history button
+            icon: const Icon(Icons.history),
+            onPressed: () {
+              Navigator.push( // navigate to history page
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const SessionHistoryPage(),
+                ),
+              );
+            },
+          ),
+        ],
+      ),
+      body: Padding( // main ui
+        padding: const EdgeInsets.all(16), // android ptsd lol
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+          crossAxisAlignment: CrossAxisAlignment.stretch, // most of this is from docs
           children: [
-            // Import video
             ElevatedButton.icon(
-              onPressed: _busy ? null : _pickVideo,
+              onPressed: busy ? null : pickVideo,
               icon: const Icon(Icons.video_file),
               label: const Text('Import video'),
             ),
             const SizedBox(height: 12),
 
-            // Import telemetry CSV
             ElevatedButton.icon(
-              onPressed: _busy ? null : _pickTelemetryCsv,
+              onPressed: busy ? null : pickTelemetryCsv,
               icon: const Icon(Icons.file_present),
               label: const Text('Import telemetry.csv'),
             ),
             const SizedBox(height: 12),
 
-            // Sync & Score
             ElevatedButton.icon(
-              onPressed: _readyToSync() ? _syncAndScore : null,
+              onPressed: readyToProcess() ? processCsvs : null,
               icon: const Icon(Icons.analytics),
-              label: const Text('Sync & Score'),
+              label: const Text('Process & Score'),
             ),
             const SizedBox(height: 20),
 
-            if (_msg.isNotEmpty) Text(_msg),
-            if (_score != null) ...[
+            if (msg.isNotEmpty) Text(msg),
+            if (score != null) ...[
               const SizedBox(height: 20),
-              Text('Score: ${_score!.toStringAsFixed(1)} / 100',
-                  style: Theme.of(context).textTheme.headlineMedium),
+              Text(
+                'Score: ${score!.toStringAsFixed(1)} / 100',
+                style: Theme.of(context).textTheme.headlineMedium,
+              ),
             ],
-            if (_laneRows.isNotEmpty) ...[
+            if (laneRows.isNotEmpty) ...[
               const SizedBox(height: 20),
-              Expanded(child: OffsetChart(rows: _laneRows)),
+              Expanded(child: OffsetChart(rows: laneRows)),
             ],
           ],
         ),

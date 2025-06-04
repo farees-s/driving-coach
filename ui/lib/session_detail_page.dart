@@ -14,7 +14,9 @@ class SessionDetailPage extends StatefulWidget {
   });
 
   @override
-  State<SessionDetailPage> createState() => _SessionDetailPageState();
+  State<SessionDetailPage> createState() {
+    return _SessionDetailPageState();
+  }
 }
 
 class _SessionDetailPageState extends State<SessionDetailPage> {
@@ -31,7 +33,9 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
 
   Future<void> _loadSessionDetail() async {
     try {
-      setState(() => _loading = true);
+      setState(() {
+        _loading = true;
+      });
       
       // Load session info
       final session = await DBService.getSessionById(widget.sessionId);
@@ -65,162 +69,182 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
   }
 
   Color _getScoreColor(double score) {
-    if (score >= 80) return Colors.green;
-    if (score >= 60) return Colors.orange;
+    if (score >= 80) {
+      return Colors.green;
+    }
+    if (score >= 60) {
+      return Colors.orange;
+    }
     return Colors.red;
   }
 
   @override
   Widget build(BuildContext context) {
+    Widget bodyContent;
+    // i asked chat for good icons i could use in the app, and it suggested a few, and i asked it how to implement them too
+
+    if (_loading) {
+      bodyContent = const Center(
+        child: CircularProgressIndicator(),
+      );
+    } else if (_error != null) {
+      bodyContent = Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(
+              Icons.error,
+              size: 64,
+              color: Colors.red,
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Error loading session',
+              style: Theme.of(context).textTheme.headlineSmall,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              _error!,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.grey),
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: _loadSessionDetail,
+              child: const Text('Retry'),
+            ),
+          ],
+        ),
+      );
+    } else if (_session == null) {
+      bodyContent = const Center(
+        child: Text('Session not found'),
+      );
+    } else {
+      Widget chartContent;
+      if (_laneData.isEmpty) {
+        chartContent = const Center(
+          child: Text(
+            'No lane data available',
+            style: TextStyle(color: Colors.grey),
+          ),
+        );
+      } else {
+        chartContent = Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: OffsetChart(rows: _laneData),
+          ),
+        );
+      }
+
+      bodyContent = Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        CircleAvatar(
+                          radius: 30,
+                          backgroundColor: _getScoreColor(
+                            (_session!['score'] as num).toDouble(),
+                          ),
+                          child: Text(
+                            'D${widget.dayNumber}',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 18,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Day ${widget.dayNumber}',
+                                style: Theme.of(context).textTheme.headlineSmall,
+                              ),
+                              Text(
+                                _formatDate(_session!['date_created']),
+                                style: const TextStyle(
+                                  color: Colors.grey,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 8,
+                          ),
+                          decoration: BoxDecoration(
+                            color: _getScoreColor(
+                              (_session!['score'] as num).toDouble(),
+                            ),
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: Text(
+                            '${(_session!['score'] as num).toStringAsFixed(1)} / 100',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 16,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16), 
+                    const Divider(),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Files Used:',
+                      style: Theme.of(context).textTheme.titleSmall, 
+                    ),
+                    const SizedBox(height: 4), 
+                    Text('• Telemetry: ${_session!['tele_file_name']}'),
+                    Text('• Lane: ${_session!['lane_file_name']}'),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Data Points: ${_laneData.length}',
+                      style: const TextStyle(color: Colors.grey),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Lane Offset Chart',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: chartContent,
+            ),
+          ],
+        ),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(
         title: Text('Day ${widget.dayNumber} Details'),
         backgroundColor: Colors.blueGrey,
         foregroundColor: Colors.white,
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : _error != null
-              ? Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Icon(Icons.error, size: 64, color: Colors.red),
-                      const SizedBox(height: 16),
-                      Text(
-                        'Error loading session',
-                        style: Theme.of(context).textTheme.headlineSmall,
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        _error!,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(color: Colors.grey),
-                      ),
-                      const SizedBox(height: 16),
-                      ElevatedButton(
-                        onPressed: _loadSessionDetail,
-                        child: const Text('Retry'),
-                      ),
-                    ],
-                  ),
-                )
-              : _session == null
-                  ? const Center(child: Text('Session not found'))
-                  : Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          // Session Info Card
-                          Card(
-                            child: Padding(
-                              padding: const EdgeInsets.all(16),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Row(
-                                    children: [
-                                      CircleAvatar(
-                                        radius: 30,
-                                        backgroundColor: _getScoreColor(
-                                          (_session!['score'] as num).toDouble(),
-                                        ),
-                                        child: Text(
-                                          'D${widget.dayNumber}',
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontWeight: FontWeight.bold,
-                                            fontSize: 18,
-                                          ),
-                                        ),
-                                      ),
-                                      const SizedBox(width: 16),
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment: CrossAxisAlignment.start,
-                                          children: [
-                                            Text(
-                                              'Day ${widget.dayNumber}',
-                                              style: Theme.of(context)
-                                                  .textTheme
-                                                  .headlineSmall,
-                                            ),
-                                            Text(
-                                              _formatDate(_session!['date_created']),
-                                              style: const TextStyle(
-                                                color: Colors.grey,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                      Container(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 16,
-                                          vertical: 8,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: _getScoreColor(
-                                            (_session!['score'] as num).toDouble(),
-                                          ),
-                                          borderRadius: BorderRadius.circular(16),
-                                        ),
-                                        child: Text(
-                                          '${(_session!['score'] as num).toStringAsFixed(1)} / 100',
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontWeight: FontWeight.bold,
-                                            fontSize: 16,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 16),
-                                  const Divider(),
-                                  const SizedBox(height: 8),
-                                  Text(
-                                    'Files Used:',
-                                    style: Theme.of(context).textTheme.titleSmall,
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text('• Telemetry: ${_session!['tele_file_name']}'),
-                                  Text('• Lane: ${_session!['lane_file_name']}'),
-                                  const SizedBox(height: 8),
-                                  Text(
-                                    'Data Points: ${_laneData.length}',
-                                    style: const TextStyle(color: Colors.grey),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 16),
-                          // Chart Section
-                          Text(
-                            'Lane Offset Chart',
-                            style: Theme.of(context).textTheme.titleLarge,
-                          ),
-                          const SizedBox(height: 8),
-                          Expanded(
-                            child: _laneData.isEmpty
-                                ? const Center(
-                                    child: Text(
-                                      'No lane data available',
-                                      style: TextStyle(color: Colors.grey),
-                                    ),
-                                  )
-                                : Card(
-                                    child: Padding(
-                                      padding: const EdgeInsets.all(16),
-                                      child: OffsetChart(rows: _laneData),
-                                    ),
-                                  ),
-                          ),
-                        ],
-                      ),
-                    ),
+      body: bodyContent,
     );
   }
 }
